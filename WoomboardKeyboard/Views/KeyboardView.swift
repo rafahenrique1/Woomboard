@@ -2,12 +2,13 @@ import UIKit
 import WoomboardCore
 
 /// View principal que organiza as fileiras com larguras proporcionais exatas,
-/// suporta modo uma mão (estilo Samsung/iOS), popup de teclas/acentos e gaveta de snippets.
+/// suporta modo uma mão (estilo Samsung/iOS), popup de teclas/acentos, gaveta de snippets e ajustes rápidos.
 final class KeyboardView: UIView {
     var onAction: ((KeyAction, UIView, UIEvent?) -> Void)?
     var onBackspaceRepeat: ((_ deleteWord: Bool) -> Void)?
     var onSpacebarPan: ((Int) -> Void)?
     var onSelectAccentOrSymbol: ((String) -> Void)?
+    var onUpdateSettings: ((inout KeyboardSettings) -> Void)?
 
     private var currentTheme: KeyboardTheme = DefaultThemes.woomLight
     private var currentSettings: KeyboardSettings = KeyboardSettings()
@@ -21,8 +22,8 @@ final class KeyboardView: UIView {
     private let rowsStack: UIStackView = {
         let stack = UIStackView()
         stack.axis = .vertical
-        stack.spacing = 8
-        stack.distribution = .fillEqually
+        stack.spacing = 9
+        stack.distribution = .fill
         stack.translatesAutoresizingMaskIntoConstraints = false
         return stack
     }()
@@ -40,22 +41,30 @@ final class KeyboardView: UIView {
 
     private let popupView = KeyPopupView()
 
-    // Gaveta rápida de Snippets (overlay leve sobre as teclas)
-    private let snippetsOverlay: UIView = {
+    // Gaveta compartilhada (Snippets ou Ajustes Rápidos dentro do teclado)
+    private let drawerOverlay: UIView = {
         let view = UIView()
         view.isHidden = true
-        view.layer.cornerRadius = 10
+        view.layer.cornerRadius = 12
+        view.layer.cornerCurve = .continuous
         view.translatesAutoresizingMaskIntoConstraints = false
         return view
     }()
 
-    private let snippetsStack: UIStackView = {
+    private let drawerStack: UIStackView = {
         let stack = UIStackView()
         stack.axis = .vertical
-        stack.spacing = 6
+        stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         return stack
     }()
+
+    private enum DrawerMode {
+        case none
+        case snippets
+        case quickSettings
+    }
+    private var activeDrawerMode: DrawerMode = .none
 
     private var leadingConstraint: NSLayoutConstraint?
     private var trailingConstraint: NSLayoutConstraint?
@@ -70,16 +79,16 @@ final class KeyboardView: UIView {
         addSubview(contentContainer)
         addSubview(oneHandedRail)
         contentContainer.addSubview(rowsStack)
-        addSubview(snippetsOverlay)
+        addSubview(drawerOverlay)
         addSubview(popupView)
 
-        setupSnippetsOverlay()
+        setupDrawerOverlay()
 
         let leading = contentContainer.leadingAnchor.constraint(equalTo: leadingAnchor)
         let trailing = contentContainer.trailingAnchor.constraint(equalTo: trailingAnchor)
         let railLeading = oneHandedRail.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
         let railTrailing = oneHandedRail.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4)
-        let height = heightAnchor.constraint(equalToConstant: 216)
+        let height = heightAnchor.constraint(equalToConstant: 220)
 
         leadingConstraint = leading
         trailingConstraint = trailing
@@ -103,10 +112,10 @@ final class KeyboardView: UIView {
             oneHandedRail.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
             oneHandedRail.widthAnchor.constraint(equalToConstant: 44),
 
-            snippetsOverlay.topAnchor.constraint(equalTo: topAnchor),
-            snippetsOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
-            snippetsOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
-            snippetsOverlay.bottomAnchor.constraint(equalTo: bottomAnchor)
+            drawerOverlay.topAnchor.constraint(equalTo: topAnchor),
+            drawerOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
+            drawerOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
+            drawerOverlay.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
     }
 
@@ -119,22 +128,34 @@ final class KeyboardView: UIView {
         currentSettings = settings
         popupView.hide()
 
-        let rowCount = CGFloat(max(rows.count, 4))
-        let rowSpacing: CGFloat = rows.count >= 5 ? 6 : 8
+        let baseRowHeight = CGFloat(settings.heightPreset.rowHeight)
+        let numberRowHeight = round(baseRowHeight * 0.84)
+        let rowSpacing: CGFloat = rows.count >= 5 ? 7 : 9
         rowsStack.spacing = rowSpacing
-        let totalHeight = (CGFloat(settings.heightPreset.rowHeight) * rowCount) + (rowSpacing * (rowCount - 1))
-        heightConstraint?.constant = totalHeight
 
-        updateOneHandedConstraints(mode: settings.oneHandedMode)
-
+        var totalHeight: CGFloat = 0
         rowsStack.arrangedSubviews.forEach {
             rowsStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
         }
 
-        for row in rows {
+        for (idx, row) in rows.enumerated() {
+            let isNumRow = row.first?.isNumberRow == true
+            let rowHeight = isNumRow ? numberRowHeight : baseRowHeight
             let rowContainer = buildProportionalRow(specs: row, theme: theme, settings: settings)
+            rowContainer.heightAnchor.constraint(equalToConstant: rowHeight).isActive = true
             rowsStack.addArrangedSubview(rowContainer)
+            totalHeight += rowHeight
+            if idx < rows.count - 1 {
+                totalHeight += rowSpacing
+            }
+        }
+
+        heightConstraint?.constant = totalHeight
+        updateOneHandedConstraints(mode: settings.oneHandedMode)
+
+        if activeDrawerMode == .quickSettings {
+            renderQuickSettingsDrawer()
         }
     }
 
@@ -142,7 +163,7 @@ final class KeyboardView: UIView {
         currentTheme = theme
         currentSettings = settings
         backgroundColor = .clear
-        snippetsOverlay.backgroundColor = UIColor(hex: theme.backgroundHex)
+        drawerOverlay.backgroundColor = UIColor(hex: theme.backgroundHex).withAlphaComponent(0.96)
 
         for rowContainer in rowsStack.arrangedSubviews {
             for case let button as KeyButton in rowContainer.subviews {
@@ -152,46 +173,25 @@ final class KeyboardView: UIView {
         }
     }
 
+    // MARK: - Drawers (Snippets & Quick Settings)
+
     func toggleSnippetsDrawer(snippets: [TextSnippet]) {
-        if !snippetsOverlay.isHidden {
-            snippetsOverlay.isHidden = true
+        if activeDrawerMode == .snippets {
+            hideDrawers()
             return
         }
+        activeDrawerMode = .snippets
+        drawerOverlay.backgroundColor = UIColor(hex: currentTheme.backgroundHex).withAlphaComponent(0.96)
+        clearDrawerStack()
 
-        snippetsOverlay.backgroundColor = UIColor(hex: currentTheme.backgroundHex)
-        snippetsStack.arrangedSubviews.forEach {
-            snippetsStack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
-        }
-
-        // Cabeçalho da gaveta
-        let header = UIStackView()
-        header.axis = .horizontal
-        header.distribution = .equalSpacing
-
-        let titleLabel = UILabel()
-        titleLabel.text = "Atalhos rápidos"
-        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-        titleLabel.textColor = UIColor(hex: currentTheme.textHex)
-
-        let closeButton = UIButton(type: .system)
-        closeButton.setTitle("Fechar", for: .normal)
-        closeButton.setTitleColor(UIColor(hex: currentTheme.accentHex), for: .normal)
-        closeButton.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
-        closeButton.addAction(UIAction { [weak self] _ in
-            self?.snippetsOverlay.isHidden = true
-        }, for: .touchUpInside)
-
-        header.addArrangedSubview(titleLabel)
-        header.addArrangedSubview(closeButton)
-        snippetsStack.addArrangedSubview(header)
+        drawerStack.addArrangedSubview(makeDrawerHeader(title: "Atalhos rápidos"))
 
         if snippets.isEmpty {
             let emptyLabel = UILabel()
             emptyLabel.text = "Adicione atalhos no app Woomboard."
             emptyLabel.font = .systemFont(ofSize: 14)
             emptyLabel.textColor = UIColor(hex: currentTheme.secondaryTextHex)
-            snippetsStack.addArrangedSubview(emptyLabel)
+            drawerStack.addArrangedSubview(emptyLabel)
         } else {
             for snippet in snippets.prefix(5) {
                 let button = UIButton(type: .system)
@@ -201,23 +201,162 @@ final class KeyboardView: UIView {
                 button.titleLabel?.font = .systemFont(ofSize: 14, weight: .regular)
                 button.titleLabel?.lineBreakMode = .byTruncatingTail
                 button.backgroundColor = UIColor(hex: currentTheme.keyBackgroundHex)
-                button.layer.cornerRadius = 8
-                button.heightAnchor.constraint(equalToConstant: 34).isActive = true
+                button.layer.cornerRadius = 9
+                button.heightAnchor.constraint(equalToConstant: 36).isActive = true
                 let textToInsert = snippet.expansion
                 button.addAction(UIAction { [weak self] _ in
-                    self?.snippetsOverlay.isHidden = true
+                    self?.hideDrawers()
                     self?.onAction?(.insertSnippet(textToInsert), button, nil)
                 }, for: .touchUpInside)
-                snippetsStack.addArrangedSubview(button)
+                drawerStack.addArrangedSubview(button)
             }
         }
 
-        snippetsOverlay.isHidden = false
-        bringSubviewToFront(snippetsOverlay)
+        drawerOverlay.isHidden = false
+        bringSubviewToFront(drawerOverlay)
     }
 
-    func hideSnippetsDrawer() {
-        snippetsOverlay.isHidden = true
+    func toggleQuickSettingsDrawer() {
+        if activeDrawerMode == .quickSettings {
+            hideDrawers()
+            return
+        }
+        activeDrawerMode = .quickSettings
+        renderQuickSettingsDrawer()
+        drawerOverlay.isHidden = false
+        bringSubviewToFront(drawerOverlay)
+    }
+
+    func hideDrawers() {
+        activeDrawerMode = .none
+        drawerOverlay.isHidden = true
+    }
+
+    private func renderQuickSettingsDrawer() {
+        drawerOverlay.backgroundColor = UIColor(hex: currentTheme.backgroundHex).withAlphaComponent(0.97)
+        clearDrawerStack()
+
+        drawerStack.addArrangedSubview(makeDrawerHeader(title: "Ajustes rápidos • Woomboard"))
+
+        // Linha 1: Layout Samsung vs Apple
+        let layoutRow = makePillRow(options: [
+            ("Samsung One UI", currentSettings.layoutStyle == .samsung, { [weak self] in
+                self?.onUpdateSettings? { $0.applyLayoutPreset(.samsung) }
+            }),
+            ("Apple iOS", currentSettings.layoutStyle == .apple, { [weak self] in
+                self?.onUpdateSettings? { $0.applyLayoutPreset(.apple) }
+            })
+        ])
+        drawerStack.addArrangedSubview(layoutRow)
+
+        // Linha 2: Toggles rápidos (Linha numérica, Símbolos, Toolbar)
+        let togglesRow = makePillRow(options: [
+            ("Números 1–0", currentSettings.showNumberRow, { [weak self] in
+                self?.onUpdateSettings? { $0.showNumberRow.toggle() }
+            }),
+            ("Símbolos", currentSettings.showSecondarySymbols, { [weak self] in
+                self?.onUpdateSettings? { $0.showSecondarySymbols.toggle() }
+            }),
+            ("Toolbar", currentSettings.showToolbar, { [weak self] in
+                self?.onUpdateSettings? { $0.showToolbar.toggle() }
+            })
+        ])
+        drawerStack.addArrangedSubview(togglesRow)
+
+        // Linha 3: Altura (Compacto / Padrão / Confortável)
+        let heightRow = makePillRow(options: KeyboardHeightPreset.allCases.map { preset in
+            (preset.displayName, currentSettings.heightPreset == preset, { [weak self] in
+                self?.onUpdateSettings? { $0.heightPreset = preset }
+            })
+        })
+        drawerStack.addArrangedSubview(heightRow)
+
+        // Linha 4: Temas rápidos
+        let themeRow = makePillRow(options: [
+            ("Auto", currentSettings.followSystemAppearance && (currentSettings.selectedThemeID == DefaultThemes.woomLight.id || currentSettings.selectedThemeID == DefaultThemes.woomDark.id), { [weak self] in
+                self?.onUpdateSettings? {
+                    $0.selectedThemeID = DefaultThemes.woomLight.id
+                    $0.followSystemAppearance = true
+                }
+            }),
+            ("Claro", !currentSettings.followSystemAppearance && currentSettings.selectedThemeID == DefaultThemes.woomLight.id, { [weak self] in
+                self?.onUpdateSettings? {
+                    $0.selectedThemeID = DefaultThemes.woomLight.id
+                    $0.followSystemAppearance = false
+                }
+            }),
+            ("Escuro", !currentSettings.followSystemAppearance && currentSettings.selectedThemeID == DefaultThemes.woomDark.id, { [weak self] in
+                self?.onUpdateSettings? {
+                    $0.selectedThemeID = DefaultThemes.woomDark.id
+                    $0.followSystemAppearance = false
+                }
+            }),
+            ("OLED", currentSettings.selectedThemeID == DefaultThemes.midnightOLED.id, { [weak self] in
+                self?.onUpdateSettings? {
+                    $0.selectedThemeID = DefaultThemes.midnightOLED.id
+                    $0.followSystemAppearance = false
+                }
+            })
+        ])
+        drawerStack.addArrangedSubview(themeRow)
+    }
+
+    private func makeDrawerHeader(title: String) -> UIStackView {
+        let header = UIStackView()
+        header.axis = .horizontal
+        header.distribution = .equalSpacing
+
+        let titleLabel = UILabel()
+        titleLabel.text = title
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.textColor = UIColor(hex: currentTheme.textHex)
+
+        let closeButton = UIButton(type: .system)
+        closeButton.setTitle("OK", for: .normal)
+        closeButton.setTitleColor(UIColor(hex: currentTheme.accentHex), for: .normal)
+        closeButton.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+        closeButton.addAction(UIAction { [weak self] _ in
+            self?.hideDrawers()
+        }, for: .touchUpInside)
+
+        header.addArrangedSubview(titleLabel)
+        header.addArrangedSubview(closeButton)
+        return header
+    }
+
+    private func makePillRow(options: [(String, Bool, () -> Void)]) -> UIStackView {
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.spacing = 6
+        row.distribution = .fillEqually
+
+        for (title, isSelected, handler) in options {
+            let button = UIButton(type: .system)
+            button.setTitle(title, for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 12.5, weight: .semibold)
+            button.layer.cornerRadius = 9
+            button.layer.cornerCurve = .continuous
+            button.heightAnchor.constraint(equalToConstant: 36).isActive = true
+
+            if isSelected {
+                button.backgroundColor = UIColor(hex: currentTheme.accentHex)
+                button.setTitleColor(.white, for: .normal)
+            } else {
+                button.backgroundColor = UIColor(hex: currentTheme.keyBackgroundHex)
+                button.setTitleColor(UIColor(hex: currentTheme.textHex), for: .normal)
+            }
+
+            button.addAction(UIAction { _ in handler() }, for: .touchUpInside)
+            row.addArrangedSubview(button)
+        }
+        return row
+    }
+
+    private func clearDrawerStack() {
+        drawerStack.arrangedSubviews.forEach {
+            drawerStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
     }
 
     // MARK: - Proportional Row Layout
@@ -231,11 +370,11 @@ final class KeyboardView: UIView {
         container.translatesAutoresizingMaskIntoConstraints = false
         container.clipsToBounds = false
 
-        let spacing: CGFloat = 5.0
+        let spacing: CGFloat = 5.5
         let totalWeight = specs.reduce(CGFloat(0)) { $0 + $1.widthMultiplier }
         guard totalWeight > 0 else { return container }
 
-        // Fileira intermediária com 9 letras (a..l) ganha respiro lateral sutil estilo Apple
+        // Fileira intermediária com 9 letras (a..l) ganha respiro lateral sutil estilo Apple/One UI
         let horizontalInset: CGFloat = (specs.count == 9 && !specs[0].isSpecial) ? 14.0 : 0.0
         let totalSpacing = spacing * CGFloat(max(specs.count - 1, 0)) + (horizontalInset * 2)
 
@@ -283,7 +422,7 @@ final class KeyboardView: UIView {
         }
 
         button.onPressStart = { [weak self] keyButton in
-            guard let self, self.currentSettings.showKeyPopup, !keyButton.spec.isSpecial else { return }
+            guard let self, self.currentSettings.showKeyPopup, !keyButton.spec.isSpecial, !keyButton.spec.title.isEmpty else { return }
             let frameInSelf = keyButton.convert(keyButton.bounds, to: self)
             self.popupView.showPreview(
                 character: keyButton.spec.title,
@@ -388,12 +527,12 @@ final class KeyboardView: UIView {
         oneHandedRail.addArrangedSubview(flipButton)
     }
 
-    private func setupSnippetsOverlay() {
-        snippetsOverlay.addSubview(snippetsStack)
+    private func setupDrawerOverlay() {
+        drawerOverlay.addSubview(drawerStack)
         NSLayoutConstraint.activate([
-            snippetsStack.topAnchor.constraint(equalTo: snippetsOverlay.topAnchor, constant: 8),
-            snippetsStack.leadingAnchor.constraint(equalTo: snippetsOverlay.leadingAnchor, constant: 10),
-            snippetsStack.trailingAnchor.constraint(equalTo: snippetsOverlay.trailingAnchor, constant: -10)
+            drawerStack.topAnchor.constraint(equalTo: drawerOverlay.topAnchor, constant: 10),
+            drawerStack.leadingAnchor.constraint(equalTo: drawerOverlay.leadingAnchor, constant: 10),
+            drawerStack.trailingAnchor.constraint(equalTo: drawerOverlay.trailingAnchor, constant: -10)
         ])
     }
 }

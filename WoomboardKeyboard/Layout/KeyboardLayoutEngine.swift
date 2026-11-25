@@ -20,9 +20,10 @@ enum ShiftState: Equatable {
     }
 }
 
-/// Especificação visual e funcional de cada tecla.
+/// Especificação visual e funcional de cada tecla (com suporte a SF Symbols nativos da Apple).
 struct KeySpec: Equatable {
     let title: String
+    let systemImage: String?
     let secondaryTitle: String?
     let action: KeyAction
     let secondaryAction: KeyAction?
@@ -30,11 +31,13 @@ struct KeySpec: Equatable {
     let isSpecial: Bool
     let isAccent: Bool
     let isHighlighted: Bool
+    let isNumberRow: Bool
     let widthMultiplier: CGFloat
     let accessibilityLabel: String
 
     init(
         title: String,
+        systemImage: String? = nil,
         secondaryTitle: String? = nil,
         action: KeyAction,
         secondaryAction: KeyAction? = nil,
@@ -42,10 +45,12 @@ struct KeySpec: Equatable {
         isSpecial: Bool = false,
         isAccent: Bool = false,
         isHighlighted: Bool = false,
+        isNumberRow: Bool = false,
         widthMultiplier: CGFloat = 1.0,
         accessibilityLabel: String? = nil
     ) {
         self.title = title
+        self.systemImage = systemImage
         self.secondaryTitle = secondaryTitle
         self.action = action
         self.secondaryAction = secondaryAction
@@ -53,6 +58,7 @@ struct KeySpec: Equatable {
         self.isSpecial = isSpecial
         self.isAccent = isAccent
         self.isHighlighted = isHighlighted
+        self.isNumberRow = isNumberRow
         self.widthMultiplier = widthMultiplier
         self.accessibilityLabel = accessibilityLabel ?? title
     }
@@ -67,8 +73,7 @@ struct KeySpec: Equatable {
     }
 }
 
-/// Motor responsável por gerar as fileiras e teclas para os layouts Samsung e Apple
-/// nas camadas de letras, números e símbolos.
+/// Motor responsável por gerar as fileiras e teclas para os layouts Samsung One UI moderno e Apple iOS 26.
 final class KeyboardLayoutEngine {
     /// Mapeamento de acentos para PT-BR / EN-US (toque longo).
     private static let accentMap: [String: [String]] = [
@@ -82,14 +87,14 @@ final class KeyboardLayoutEngine {
         ".": [".", ",", "?", "!", "@", ".com"]
     ]
 
-    /// Símbolos secundários estilo Samsung exibidos no canto superior direito das letras.
+    /// Símbolos secundários estilo Samsung One UI moderno exibidos no canto superior direito das letras.
     private static let samsungSecondarySymbols: [String: String] = [
-        "q": "!", "w": "@", "e": "#", "r": "$", "t": "%",
-        "y": "^", "u": "&", "i": "*", "o": "(", "p": ")",
-        "a": "-", "s": "'", "d": "\"", "f": ":", "g": ";",
-        "h": "/", "j": "+", "k": "=", "l": "_",
-        "z": "~", "x": "\\", "c": "?", "v": "!", "b": ",",
-        "n": ".", "m": "€"
+        "q": "+", "w": "×", "e": "÷", "r": "=", "t": "/",
+        "y": "_", "u": "<", "i": ">", "o": "[", "p": "]",
+        "a": "!", "s": "@", "d": "#", "f": "$", "g": "%",
+        "h": "&", "j": "*", "k": "(", "l": ")",
+        "z": "-", "x": "'", "c": "\"", "v": ":", "b": ";",
+        "n": ",", "m": "?"
     ]
 
     func rows(
@@ -97,7 +102,8 @@ final class KeyboardLayoutEngine {
         shiftState: ShiftState,
         settings: KeyboardSettings,
         includeGlobeKey: Bool,
-        returnKeyTitle: String? = nil
+        returnKeySymbol: String = "return",
+        returnKeyLabel: String? = nil
     ) -> [[KeySpec]] {
         switch layer {
         case .letters:
@@ -105,19 +111,22 @@ final class KeyboardLayoutEngine {
                 shiftState: shiftState,
                 settings: settings,
                 includeGlobeKey: includeGlobeKey,
-                returnKeyTitle: returnKeyTitle
+                returnKeySymbol: returnKeySymbol,
+                returnKeyLabel: returnKeyLabel
             )
         case .numbers:
             return numberRows(
                 settings: settings,
                 includeGlobeKey: includeGlobeKey,
-                returnKeyTitle: returnKeyTitle
+                returnKeySymbol: returnKeySymbol,
+                returnKeyLabel: returnKeyLabel
             )
         case .symbols:
             return symbolRows(
                 settings: settings,
                 includeGlobeKey: includeGlobeKey,
-                returnKeyTitle: returnKeyTitle
+                returnKeySymbol: returnKeySymbol,
+                returnKeyLabel: returnKeyLabel
             )
         }
     }
@@ -128,7 +137,8 @@ final class KeyboardLayoutEngine {
         shiftState: ShiftState,
         settings: KeyboardSettings,
         includeGlobeKey: Bool,
-        returnKeyTitle: String?
+        returnKeySymbol: String,
+        returnKeyLabel: String?
     ) -> [[KeySpec]] {
         let isUpper = shiftState.isUppercase
         var result: [[KeySpec]] = []
@@ -136,7 +146,7 @@ final class KeyboardLayoutEngine {
         if settings.showNumberRow {
             let digits = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
             result.append(digits.map { digit in
-                KeySpec(title: digit, action: .character(digit), widthMultiplier: 1.0)
+                KeySpec(title: digit, action: .character(digit), isNumberRow: true, widthMultiplier: 1.0)
             })
         }
 
@@ -150,30 +160,32 @@ final class KeyboardLayoutEngine {
         result.append(mapLetterRow(row1, uppercase: isUpper, showSecondary: settings.showSecondarySymbols))
         result.append(mapLetterRow(row2, uppercase: isUpper, showSecondary: settings.showSecondarySymbols))
 
-        let shiftSymbol: String
+        let shiftIcon: String
         switch shiftState {
-        case .lower: shiftSymbol = "⇧"
-        case .upper: shiftSymbol = "⬆︎"
-        case .capsLock: shiftSymbol = "⇪"
+        case .lower: shiftIcon = "shift"
+        case .upper: shiftIcon = "shift.fill"
+        case .capsLock: shiftIcon = "capslock.fill"
         }
 
         var thirdRow: [KeySpec] = [
             KeySpec(
-                title: shiftSymbol,
+                title: "",
+                systemImage: shiftIcon,
                 action: .shift,
                 isSpecial: true,
                 isHighlighted: shiftState != .lower,
-                widthMultiplier: 1.45,
+                widthMultiplier: 1.48,
                 accessibilityLabel: shiftState == .capsLock ? "Caps Lock" : "Shift"
             )
         ]
         thirdRow.append(contentsOf: mapLetterRow(row3, uppercase: isUpper, showSecondary: settings.showSecondarySymbols))
         thirdRow.append(
             KeySpec(
-                title: "⌫",
+                title: "",
+                systemImage: "delete.left",
                 action: .backspace,
                 isSpecial: true,
-                widthMultiplier: 1.45,
+                widthMultiplier: 1.48,
                 accessibilityLabel: "Apagar"
             )
         )
@@ -181,11 +193,12 @@ final class KeyboardLayoutEngine {
 
         result.append(
             bottomRow(
-                modeKeyTitle: "123",
+                modeKeyTitle: settings.layoutStyle == .samsung ? "!#1" : "123",
                 modeKeyAction: .switchToNumbers,
                 settings: settings,
                 includeGlobeKey: includeGlobeKey,
-                returnKeyTitle: returnKeyTitle
+                returnKeySymbol: returnKeySymbol,
+                returnKeyLabel: returnKeyLabel
             )
         )
 
@@ -197,7 +210,8 @@ final class KeyboardLayoutEngine {
     private func numberRows(
         settings: KeyboardSettings,
         includeGlobeKey: Bool,
-        returnKeyTitle: String?
+        returnKeySymbol: String,
+        returnKeyLabel: String?
     ) -> [[KeySpec]] {
         let row1 = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"].map {
             KeySpec(title: $0, action: .character($0))
@@ -207,13 +221,13 @@ final class KeyboardLayoutEngine {
         }
 
         var row3: [KeySpec] = [
-            KeySpec(title: "#+=", action: .switchToSymbols, isSpecial: true, widthMultiplier: 1.45, accessibilityLabel: "Mais símbolos")
+            KeySpec(title: "#+=", action: .switchToSymbols, isSpecial: true, widthMultiplier: 1.48, accessibilityLabel: "Mais símbolos")
         ]
         row3.append(contentsOf: [".", ",", "?", "!", "'"].map {
             KeySpec(title: $0, action: .character($0), widthMultiplier: 1.4)
         })
         row3.append(
-            KeySpec(title: "⌫", action: .backspace, isSpecial: true, widthMultiplier: 1.45, accessibilityLabel: "Apagar")
+            KeySpec(title: "", systemImage: "delete.left", action: .backspace, isSpecial: true, widthMultiplier: 1.48, accessibilityLabel: "Apagar")
         )
 
         let row4 = bottomRow(
@@ -221,7 +235,8 @@ final class KeyboardLayoutEngine {
             modeKeyAction: .switchToLetters,
             settings: settings,
             includeGlobeKey: includeGlobeKey,
-            returnKeyTitle: returnKeyTitle
+            returnKeySymbol: returnKeySymbol,
+            returnKeyLabel: returnKeyLabel
         )
 
         return [row1, row2, row3, row4]
@@ -232,7 +247,8 @@ final class KeyboardLayoutEngine {
     private func symbolRows(
         settings: KeyboardSettings,
         includeGlobeKey: Bool,
-        returnKeyTitle: String?
+        returnKeySymbol: String,
+        returnKeyLabel: String?
     ) -> [[KeySpec]] {
         let row1 = ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="].map {
             KeySpec(title: $0, action: .character($0))
@@ -242,13 +258,13 @@ final class KeyboardLayoutEngine {
         }
 
         var row3: [KeySpec] = [
-            KeySpec(title: "123", action: .switchToNumbers, isSpecial: true, widthMultiplier: 1.45, accessibilityLabel: "Números")
+            KeySpec(title: "123", action: .switchToNumbers, isSpecial: true, widthMultiplier: 1.48, accessibilityLabel: "Números")
         ]
         row3.append(contentsOf: [".", ",", "?", "!", "'"].map {
             KeySpec(title: $0, action: .character($0), widthMultiplier: 1.4)
         })
         row3.append(
-            KeySpec(title: "⌫", action: .backspace, isSpecial: true, widthMultiplier: 1.45, accessibilityLabel: "Apagar")
+            KeySpec(title: "", systemImage: "delete.left", action: .backspace, isSpecial: true, widthMultiplier: 1.48, accessibilityLabel: "Apagar")
         )
 
         let row4 = bottomRow(
@@ -256,42 +272,42 @@ final class KeyboardLayoutEngine {
             modeKeyAction: .switchToLetters,
             settings: settings,
             includeGlobeKey: includeGlobeKey,
-            returnKeyTitle: returnKeyTitle
+            returnKeySymbol: returnKeySymbol,
+            returnKeyLabel: returnKeyLabel
         )
 
         return [row1, row2, row3, row4]
     }
 
-    // MARK: - Bottom Row (Samsung vs. Apple)
+    // MARK: - Bottom Row (One UI 9 vs. Apple iOS 26)
 
     private func bottomRow(
         modeKeyTitle: String,
         modeKeyAction: KeyAction,
         settings: KeyboardSettings,
         includeGlobeKey: Bool,
-        returnKeyTitle: String?
+        returnKeySymbol: String,
+        returnKeyLabel: String?
     ) -> [KeySpec] {
-        let returnLabel = returnKeyTitle ?? settings.language.returnLabel
-        let spaceTitle: String
-        if settings.layoutStyle == .samsung {
-            spaceTitle = "\(settings.language.spacebarLabel) (\(settings.language.shortCode))"
-        } else {
-            spaceTitle = settings.language.spacebarLabel
-        }
+        let returnAccessibility = returnKeyLabel ?? settings.language.returnLabel
+        let spaceTitle = settings.layoutStyle == .samsung
+            ? (settings.language == .ptBR ? "Português" : "English")
+            : settings.language.spacebarLabel
 
         var row: [KeySpec] = [
             KeySpec(
                 title: modeKeyTitle,
                 action: modeKeyAction,
                 isSpecial: true,
-                widthMultiplier: settings.layoutStyle == .samsung ? 1.35 : 1.55
+                widthMultiplier: settings.layoutStyle == .samsung ? 1.4 : 1.7
             )
         ]
 
         if includeGlobeKey {
             row.append(
                 KeySpec(
-                    title: "🌐",
+                    title: "",
+                    systemImage: "globe",
                     action: .nextKeyboard,
                     isSpecial: true,
                     widthMultiplier: settings.layoutStyle == .samsung ? 1.05 : 1.25,
@@ -301,14 +317,12 @@ final class KeyboardLayoutEngine {
         }
 
         if settings.layoutStyle == .samsung {
-            // Ergonomia Samsung: vírgula à esquerda e ponto à direita da barra de espaço
+            // Samsung One UI moderno: !#1 | , | Português (espaço limpo) | . | ↵ (SF Symbol)
             row.append(
                 KeySpec(
                     title: ",",
-                    secondaryTitle: "?",
                     action: .character(","),
-                    secondaryAction: .character("?"),
-                    isSpecial: true,
+                    isSpecial: false,
                     widthMultiplier: 0.95,
                     accessibilityLabel: "Vírgula"
                 )
@@ -318,51 +332,50 @@ final class KeyboardLayoutEngine {
                     title: spaceTitle,
                     action: .space,
                     isSpecial: false,
-                    widthMultiplier: includeGlobeKey ? 3.8 : 4.8,
+                    widthMultiplier: includeGlobeKey ? 4.2 : 5.25,
                     accessibilityLabel: "Espaço"
                 )
             )
             row.append(
                 KeySpec(
                     title: ".",
-                    secondaryTitle: "!",
-                    action: .character("."),
-                    secondaryAction: .character("!"),
                     accentOptions: Self.accentMap["."] ?? [],
-                    isSpecial: true,
+                    isSpecial: false,
                     widthMultiplier: 0.95,
                     accessibilityLabel: "Ponto"
                 )
             )
             row.append(
                 KeySpec(
-                    title: returnLabel,
+                    title: "",
+                    systemImage: returnKeySymbol,
                     action: .returnKey,
                     isSpecial: true,
                     isAccent: true,
-                    widthMultiplier: 1.9,
-                    accessibilityLabel: returnLabel
+                    widthMultiplier: 1.55,
+                    accessibilityLabel: returnAccessibility
                 )
             )
         } else {
-            // Layout limpo padrão Apple: barra de espaço ampla sem vírgula/ponto na base
+            // Apple iOS 26: 123 | espaço amplo | ↵ (SF Symbol)
             row.append(
                 KeySpec(
                     title: spaceTitle,
                     action: .space,
                     isSpecial: false,
-                    widthMultiplier: includeGlobeKey ? 5.1 : 6.3,
+                    widthMultiplier: includeGlobeKey ? 5.3 : 6.55,
                     accessibilityLabel: "Espaço"
                 )
             )
             row.append(
                 KeySpec(
-                    title: returnLabel,
+                    title: "",
+                    systemImage: returnKeySymbol,
                     action: .returnKey,
                     isSpecial: true,
                     isAccent: true,
-                    widthMultiplier: 2.1,
-                    accessibilityLabel: returnLabel
+                    widthMultiplier: 1.85,
+                    accessibilityLabel: returnAccessibility
                 )
             )
         }

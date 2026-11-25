@@ -21,4 +21,5 @@ public enum KeyAction: Equatable, Sendable {
     case toggleOneHanded(OneHandedMode)
     case toggleLayoutStyle
     case openSnippetsDrawer
+    case openQuickSettings
 }

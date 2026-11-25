@@ -3,7 +3,7 @@ import UIKit
 import WoomboardCore
 
 /// Ponto de entrada da Custom Keyboard Extension do Woomboard.
-/// Combina estética nativa Apple com ergonomia e recursos do teclado Samsung.
+/// Combina estética nativa Apple iOS 26 (translúcido, SF Symbols) com ergonomia Samsung One UI moderno.
 final class KeyboardViewController: UIInputViewController {
     private let settingsStore = SharedSettingsStore()
     private let layoutEngine = KeyboardLayoutEngine()
@@ -80,10 +80,10 @@ final class KeyboardViewController: UIInputViewController {
 
         NSLayoutConstraint.activate([
             containerStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 4),
-            containerStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 3),
-            containerStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -3),
-            containerStack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -6),
-            suggestionBar.heightAnchor.constraint(equalToConstant: 38)
+            containerStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4),
+            containerStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
+            containerStack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -4),
+            suggestionBar.heightAnchor.constraint(equalToConstant: 40)
         ])
 
         applyThemeAndSettings()
@@ -124,6 +124,16 @@ final class KeyboardViewController: UIInputViewController {
             self.updateSuggestions()
         }
 
+        keyboardView.onUpdateSettings = { [weak self] mutate in
+            guard let self else { return }
+            mutate(&self.settings)
+            self.settingsStore.saveSettings(self.settings)
+            self.currentTheme = self.resolvedTheme()
+            self.suggestionEngine = SuggestionEngine(snippets: self.settings.snippets)
+            self.applyThemeAndSettings()
+            self.renderCurrentLayout()
+        }
+
         suggestionBar.onSelectSuggestion = { [weak self] suggestion in
             self?.replaceCurrentWord(with: suggestion)
         }
@@ -135,7 +145,9 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func applyThemeAndSettings() {
-        view.backgroundColor = UIColor(hex: currentTheme.backgroundHex)
+        // Nos temas Apple Light/Dark, deixa o fundo transparente para integrar com o Liquid Glass nativo do iOS 26
+        let usesNativeBackdrop = (currentTheme.id == DefaultThemes.woomLight.id || currentTheme.id == DefaultThemes.woomDark.id)
+        view.backgroundColor = usesNativeBackdrop ? .clear : UIColor(hex: currentTheme.backgroundHex)
         keyboardView.apply(theme: currentTheme, settings: settings)
         suggestionBar.apply(theme: currentTheme, settings: settings)
     }
@@ -146,7 +158,8 @@ final class KeyboardViewController: UIInputViewController {
             shiftState: shiftState,
             settings: settings,
             includeGlobeKey: needsInputModeSwitchKey,
-            returnKeyTitle: resolvedReturnKeyTitle()
+            returnKeySymbol: resolvedReturnKeySymbol(),
+            returnKeyLabel: resolvedReturnKeyTitle()
         )
         keyboardView.configure(rows: rows, theme: currentTheme, settings: settings)
     }
@@ -169,8 +182,6 @@ final class KeyboardViewController: UIInputViewController {
             if currentLayer == .letters && shiftState == .upper {
                 shiftState = .lower
                 renderCurrentLayout()
-            } else if currentLayer != .letters && (value == "." || value == "!" || value == "?") {
-                // Facilita retorno automático opcional mantendo estabilidade
             }
 
         case .space:
@@ -202,17 +213,17 @@ final class KeyboardViewController: UIInputViewController {
             renderCurrentLayout()
 
         case .switchToNumbers:
-            keyboardView.hideSnippetsDrawer()
+            keyboardView.hideDrawers()
             currentLayer = .numbers
             renderCurrentLayout()
 
         case .switchToSymbols:
-            keyboardView.hideSnippetsDrawer()
+            keyboardView.hideDrawers()
             currentLayer = .symbols
             renderCurrentLayout()
 
         case .switchToLetters:
-            keyboardView.hideSnippetsDrawer()
+            keyboardView.hideDrawers()
             currentLayer = .letters
             syncAutoCapitalization()
             renderCurrentLayout()
@@ -233,8 +244,6 @@ final class KeyboardViewController: UIInputViewController {
         case .toggleLayoutStyle:
             let nextStyle: KeyboardLayoutStyle = (settings.layoutStyle == .samsung) ? .apple : .samsung
             settings.applyLayoutPreset(nextStyle)
-            // Mantém a toolbar acessível se o usuário acabou de trocar por ela
-            settings.showToolbar = true
             settingsStore.saveSettings(settings)
             applyThemeAndSettings()
             renderCurrentLayout()
@@ -247,6 +256,9 @@ final class KeyboardViewController: UIInputViewController {
 
         case .openSnippetsDrawer:
             keyboardView.toggleSnippetsDrawer(snippets: settings.snippets)
+
+        case .openQuickSettings:
+            keyboardView.toggleQuickSettingsDrawer()
 
         case .pasteClipboard:
             if hasFullAccess, let pasted = UIPasteboard.general.string, !pasted.isEmpty {
@@ -406,7 +418,7 @@ final class KeyboardViewController: UIInputViewController {
         updateSuggestions()
     }
 
-    // MARK: - Feedback & Labels
+    // MARK: - Feedback & Return Key
 
     private func triggerFeedback(isSpecial: Bool) {
         if settings.enableHaptics {
@@ -422,6 +434,17 @@ final class KeyboardViewController: UIInputViewController {
 
         if settings.enableKeySounds {
             AudioServicesPlaySystemSound(isSpecial ? 1155 : 1104)
+        }
+    }
+
+    private func resolvedReturnKeySymbol() -> String {
+        switch textDocumentProxy.returnKeyType {
+        case .search: return "magnifyingglass"
+        case .send: return "paperplane.fill"
+        case .go: return "arrow.right"
+        case .done: return "checkmark"
+        case .next: return "arrow.right.to.line"
+        default: return "return"
         }
     }
 

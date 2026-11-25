@@ -1,32 +1,32 @@
 import Foundation
 
-/// Presets de temas embutidos no Woomboard com estética nativa Apple (funcionam mesmo sem Full Access).
+/// Presets de temas embutidos no Woomboard com estética nativa Apple iOS 26 + One UI moderno.
 public enum DefaultThemes {
-    /// Estilo nativo Claro do iOS (SF Pro, teclas brancas com sombra 1pt, acento System Blue).
+    /// Estilo nativo Claro do iOS 26 (fundo translúcido, teclas brancas arredondadas e acento System Blue).
     public static let woomLight = KeyboardTheme(
         id: "woom-light",
         name: "Apple Light",
-        backgroundHex: "#D1D3D9",
+        backgroundHex: "#D1D5DB",
         keyBackgroundHex: "#FFFFFF",
-        specialKeyBackgroundHex: "#AEB3BE",
+        specialKeyBackgroundHex: "#B8BFC9",
         accentHex: "#007AFF",
         textHex: "#000000",
-        secondaryTextHex: "#6E737D",
-        keyCornerRadius: 5.0,
+        secondaryTextHex: "#7A818C",
+        keyCornerRadius: 8.5,
         showKeyShadow: true
     )
 
-    /// Estilo nativo Escuro do iOS (grafite suave, teclas elevadas translúcidas, acento System Blue Dark).
+    /// Estilo nativo Escuro do iOS 26 (teclas elevadas translúcidas, contraste confortável e acento System Blue Dark).
     public static let woomDark = KeyboardTheme(
         id: "woom-dark",
         name: "Apple Dark",
         backgroundHex: "#1C1C1E",
-        keyBackgroundHex: "#4A4A4C",
+        keyBackgroundHex: "#48484A",
         specialKeyBackgroundHex: "#2C2C2E",
         accentHex: "#0A84FF",
         textHex: "#FFFFFF",
-        secondaryTextHex: "#AEAEB2",
-        keyCornerRadius: 5.0,
+        secondaryTextHex: "#98989D",
+        keyCornerRadius: 8.5,
         showKeyShadow: true
     )
 
@@ -36,11 +36,11 @@ public enum DefaultThemes {
         name: "Midnight OLED",
         backgroundHex: "#000000",
         keyBackgroundHex: "#1C1C1E",
-        specialKeyBackgroundHex: "#111113",
+        specialKeyBackgroundHex: "#121214",
         accentHex: "#0A84FF",
         textHex: "#FFFFFF",
         secondaryTextHex: "#8E8E93",
-        keyCornerRadius: 6.0,
+        keyCornerRadius: 9.0,
         showKeyShadow: false
     )
 
@@ -54,7 +54,7 @@ public enum DefaultThemes {
         accentHex: "#2F6F4E",
         textHex: "#1C2B21",
         secondaryTextHex: "#5B7062",
-        keyCornerRadius: 7.0,
+        keyCornerRadius: 9.0,
         showKeyShadow: true
     )
 

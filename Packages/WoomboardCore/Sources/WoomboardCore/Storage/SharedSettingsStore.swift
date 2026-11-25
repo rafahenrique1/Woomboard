@@ -26,7 +26,6 @@ public final class SharedSettingsStore: @unchecked Sendable {
     }
 
     public func loadSettings() -> KeyboardSettings {
-        userDefaults.synchronize()
         guard let data = userDefaults.data(forKey: Self.settingsKey),
               let settings = try? decoder.decode(KeyboardSettings.self, from: data) else {
             return KeyboardSettings()
@@ -37,7 +36,6 @@ public final class SharedSettingsStore: @unchecked Sendable {
     public func saveSettings(_ settings: KeyboardSettings) {
         guard let data = try? encoder.encode(settings) else { return }
         userDefaults.set(data, forKey: Self.settingsKey)
-        userDefaults.synchronize()
     }
 
     /// Extrai o primeiro App Group listado no `embedded.mobileprovision` do app ou da extensão.

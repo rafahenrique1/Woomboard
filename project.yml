@@ -27,8 +27,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.woomboard.app
         INFOPLIST_FILE: WoomboardApp/Resources/Info.plist
         GENERATE_INFOPLIST_FILE: NO
-        MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "3"
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "4"
         SWIFT_VERSION: "5.9"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
@@ -47,8 +47,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.woomboard.app.keyboard
         INFOPLIST_FILE: WoomboardKeyboard/Resources/Info.plist
         GENERATE_INFOPLIST_FILE: NO
-        MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "3"
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "4"
         SWIFT_VERSION: "5.9"
         APPLICATION_EXTENSION_API_ONLY: YES
 

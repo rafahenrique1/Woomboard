@@ -7,6 +7,7 @@ struct SettingsView: View {
 
     @State private var newTrigger: String = ""
     @State private var newExpansion: String = ""
+    @State private var newPinnedClip: String = ""
 
     var body: some View {
         NavigationStack {
@@ -25,7 +26,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Estilo de Layout")
                 } footer: {
-                    Text("Ambos os layouts mantêm o visual nativo da Apple; você pode personalizar cada recurso abaixo.")
+                    Text("Dica: você também pode trocar o layout e ajustes direto no botão ⚙️ da barra superior do teclado.")
                 }
 
                 Section("Ergonomia & Recursos") {
@@ -56,7 +57,31 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Digitação & Gestos") {
+                if settings.showToolbar {
+                    Section {
+                        ForEach(ToolbarItem.allCases) { item in
+                            Toggle(isOn: Binding(
+                                get: { settings.toolbarItems.contains(item) },
+                                set: { enabled in
+                                    if enabled {
+                                        if !settings.toolbarItems.contains(item) && settings.toolbarItems.count < 6 {
+                                            settings.toolbarItems.append(item)
+                                        }
+                                    } else {
+                                        settings.toolbarItems.removeAll { $0 == item }
+                                    }
+                                    onSave()
+                                }
+                            )) {
+                                Label(item.displayName, systemImage: item.systemImage)
+                            }
+                        }
+                    } header: {
+                        Text("Ícones da Barra de Ferramentas (máx. 6)")
+                    }
+                }
+
+                Section("Digitação & Gestos (120Hz)") {
                     Toggle("Trackpad na barra de espaço", isOn: $settings.enableSpacebarTrackpad)
                     Toggle("Maiúscula automática", isOn: $settings.autoCapitalization)
                     Toggle("Ponto com duplo espaço", isOn: $settings.doubleSpacePeriod)
@@ -73,6 +98,30 @@ struct SettingsView: View {
                         }
                     }
                     Toggle("Som das teclas", isOn: $settings.enableKeySounds)
+                }
+
+                Section("Itens Fixados (Clipboard Offline)") {
+                    ForEach(settings.pinnedClipboardItems, id: \.self) { item in
+                        Text(item)
+                            .font(.subheadline)
+                            .lineLimit(2)
+                    }
+                    .onDelete { offsets in
+                        settings.pinnedClipboardItems.remove(atOffsets: offsets)
+                        onSave()
+                    }
+
+                    HStack {
+                        TextField("Novo texto fixado (ex.: PIX, endereço)", text: $newPinnedClip)
+                        Button("Fixar") {
+                            let cleaned = newPinnedClip.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !cleaned.isEmpty else { return }
+                            settings.pinnedClipboardItems.insert(cleaned, at: 0)
+                            newPinnedClip = ""
+                            onSave()
+                        }
+                        .disabled(newPinnedClip.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
                 }
 
                 Section {
@@ -149,7 +198,6 @@ private struct LayoutStyleCard: View {
                         .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                 }
 
-                // Mini prévia visual das fileiras do layout
                 VStack(spacing: 4) {
                     if style == .samsung {
                         miniRow(keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"], isSpecialRow: false)
@@ -157,8 +205,8 @@ private struct LayoutStyleCard: View {
                     miniRow(keys: ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"], isSpecialRow: false)
                     miniRow(
                         keys: style == .samsung
-                            ? ["123", ",", "espaço", ".", "↵"]
-                            : ["123", "espaço", "retorno"],
+                            ? ["!#1", ",", "Português", ".", "↵"]
+                            : ["123", "espaço", "↵"],
                         isSpecialRow: true
                     )
                 }
@@ -174,8 +222,8 @@ private struct LayoutStyleCard: View {
     private func miniRow(keys: [String], isSpecialRow: Bool) -> some View {
         HStack(spacing: 3) {
             ForEach(keys, id: \.self) { key in
-                let isAccent = (key == "↵" || key == "retorno")
-                let isSpace = (key == "espaço")
+                let isAccent = (key == "↵")
+                let isSpace = (key == "espaço" || key == "Português")
                 Text(key)
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(isAccent ? .white : Color(hex: theme.textHex))
@@ -185,7 +233,7 @@ private struct LayoutStyleCard: View {
                     .background(
                         isAccent
                             ? Color(hex: theme.accentHex)
-                            : Color(hex: (isSpecialRow && !isSpace) ? theme.specialKeyBackgroundHex : theme.keyBackgroundHex)
+                            : Color(hex: (isSpecialRow && !isSpace && key != "," && key != ".") ? theme.specialKeyBackgroundHex : theme.keyBackgroundHex)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             }

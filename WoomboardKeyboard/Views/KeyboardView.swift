@@ -1,17 +1,23 @@
 import UIKit
 import WoomboardCore
 
-/// View principal que organiza as fileiras com larguras proporcionais exatas,
-/// suporta modo uma mão (estilo Samsung/iOS), popup de teclas/acentos, gaveta de snippets e ajustes rápidos.
+/// View principal otimizada para 120Hz ProMotion:
+/// - Reutiliza `KeyButton`s no lugar quando o formato das fileiras não muda (zero recriação no Shift!)
+/// - Hospeda modo uma mão, KeyPopupView, EmojiDrawerView, Clipboard inteligente, Snippets e Ajustes Rápidos.
 final class KeyboardView: UIView {
     var onAction: ((KeyAction, UIView, UIEvent?) -> Void)?
     var onBackspaceRepeat: ((_ deleteWord: Bool) -> Void)?
     var onSpacebarPan: ((Int) -> Void)?
     var onSelectAccentOrSymbol: ((String) -> Void)?
     var onUpdateSettings: (((inout KeyboardSettings) -> Void) -> Void)?
+    var onPrepareHaptics: (() -> Void)?
 
     private var currentTheme: KeyboardTheme = DefaultThemes.woomLight
     private var currentSettings: KeyboardSettings = KeyboardSettings()
+
+    // Cache de estrutura para reutilização in-place a 120Hz
+    private var rowButtons: [[KeyButton]] = []
+    private var lastRowSignature: String = ""
 
     private let contentContainer: UIView = {
         let view = UIView()
@@ -40,8 +46,14 @@ final class KeyboardView: UIView {
     }()
 
     private let popupView = KeyPopupView()
+    private let emojiDrawer: EmojiDrawerView = {
+        let view = EmojiDrawerView()
+        view.isHidden = true
+        view.translatesAutoresizingMaskIntoConstraints = false
+        return view
+    }()
 
-    // Gaveta compartilhada (Snippets ou Ajustes Rápidos dentro do teclado)
+    // Gaveta compartilhada (Clipboard, Snippets ou Ajustes Rápidos)
     private let drawerOverlay: UIView = {
         let view = UIView()
         view.isHidden = true
@@ -61,6 +73,8 @@ final class KeyboardView: UIView {
 
     private enum DrawerMode {
         case none
+        case emoji
+        case clipboard
         case snippets
         case quickSettings
     }
@@ -79,10 +93,12 @@ final class KeyboardView: UIView {
         addSubview(contentContainer)
         addSubview(oneHandedRail)
         contentContainer.addSubview(rowsStack)
+        addSubview(emojiDrawer)
         addSubview(drawerOverlay)
         addSubview(popupView)
 
         setupDrawerOverlay()
+        setupEmojiDrawerCallbacks()
 
         let leading = contentContainer.leadingAnchor.constraint(equalTo: leadingAnchor)
         let trailing = contentContainer.trailingAnchor.constraint(equalTo: trailingAnchor)
@@ -112,6 +128,11 @@ final class KeyboardView: UIView {
             oneHandedRail.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
             oneHandedRail.widthAnchor.constraint(equalToConstant: 44),
 
+            emojiDrawer.topAnchor.constraint(equalTo: topAnchor),
+            emojiDrawer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            emojiDrawer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            emojiDrawer.bottomAnchor.constraint(equalTo: bottomAnchor),
+
             drawerOverlay.topAnchor.constraint(equalTo: topAnchor),
             drawerOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
             drawerOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -123,10 +144,30 @@ final class KeyboardView: UIView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    /// Configura ou atualiza in-place as teclas. Quando apenas Shift/CapsLock/idioma muda,
+    /// atualiza cada `KeyButton` sem destruir views nem refazer constraints (120Hz sem engasgos).
     func configure(rows: [[KeySpec]], theme: KeyboardTheme, settings: KeyboardSettings) {
         currentTheme = theme
         currentSettings = settings
         popupView.hide()
+
+        let signature = makeSignature(rows: rows, settings: settings)
+        if signature == lastRowSignature && rowButtons.count == rows.count {
+            for (rIdx, row) in rows.enumerated() {
+                for (cIdx, spec) in row.enumerated() {
+                    let button = rowButtons[rIdx][cIdx]
+                    button.enableSpacebarTrackpad = settings.enableSpacebarTrackpad
+                    button.update(spec: spec, theme: theme)
+                }
+            }
+            if activeDrawerMode == .quickSettings {
+                renderQuickSettingsDrawer()
+            }
+            return
+        }
+
+        lastRowSignature = signature
+        rowButtons.removeAll(keepingCapacity: true)
 
         let baseRowHeight = CGFloat(settings.heightPreset.rowHeight)
         let numberRowHeight = round(baseRowHeight * 0.84)
@@ -142,9 +183,10 @@ final class KeyboardView: UIView {
         for (idx, row) in rows.enumerated() {
             let isNumRow = row.first?.isNumberRow == true
             let rowHeight = isNumRow ? numberRowHeight : baseRowHeight
-            let rowContainer = buildProportionalRow(specs: row, theme: theme, settings: settings)
+            let (rowContainer, buttons) = buildProportionalRow(specs: row, theme: theme, settings: settings)
             rowContainer.heightAnchor.constraint(equalToConstant: rowHeight).isActive = true
             rowsStack.addArrangedSubview(rowContainer)
+            rowButtons.append(buttons)
             totalHeight += rowHeight
             if idx < rows.count - 1 {
                 totalHeight += rowSpacing
@@ -165,21 +207,46 @@ final class KeyboardView: UIView {
         backgroundColor = .clear
         drawerOverlay.backgroundColor = UIColor(hex: theme.backgroundHex).withAlphaComponent(0.96)
 
-        for rowContainer in rowsStack.arrangedSubviews {
-            for case let button as KeyButton in rowContainer.subviews {
+        for row in rowButtons {
+            for button in row {
                 button.enableSpacebarTrackpad = settings.enableSpacebarTrackpad
                 button.apply(theme: theme)
             }
         }
     }
 
-    // MARK: - Drawers (Snippets & Quick Settings)
+    // MARK: - Drawers (Emoji, Clipboard, Snippets, Quick Settings)
+
+    func toggleEmojiDrawer() {
+        if activeDrawerMode == .emoji {
+            hideDrawers()
+            return
+        }
+        hideDrawers()
+        activeDrawerMode = .emoji
+        emojiDrawer.configure(recentEmojis: currentSettings.recentEmojis, theme: currentTheme)
+        emojiDrawer.isHidden = false
+        bringSubviewToFront(emojiDrawer)
+    }
+
+    func toggleClipboardDrawer(currentPasteboardText: String?) {
+        if activeDrawerMode == .clipboard {
+            hideDrawers()
+            return
+        }
+        hideDrawers()
+        activeDrawerMode = .clipboard
+        renderClipboardDrawer(currentPasteboardText: currentPasteboardText)
+        drawerOverlay.isHidden = false
+        bringSubviewToFront(drawerOverlay)
+    }
 
     func toggleSnippetsDrawer(snippets: [TextSnippet]) {
         if activeDrawerMode == .snippets {
             hideDrawers()
             return
         }
+        hideDrawers()
         activeDrawerMode = .snippets
         drawerOverlay.backgroundColor = UIColor(hex: currentTheme.backgroundHex).withAlphaComponent(0.96)
         clearDrawerStack()
@@ -187,27 +254,13 @@ final class KeyboardView: UIView {
         drawerStack.addArrangedSubview(makeDrawerHeader(title: "Atalhos rápidos"))
 
         if snippets.isEmpty {
-            let emptyLabel = UILabel()
-            emptyLabel.text = "Adicione atalhos no app Woomboard."
-            emptyLabel.font = .systemFont(ofSize: 14)
-            emptyLabel.textColor = UIColor(hex: currentTheme.secondaryTextHex)
-            drawerStack.addArrangedSubview(emptyLabel)
+            drawerStack.addArrangedSubview(makeEmptyLabel("Adicione atalhos no app Woomboard."))
         } else {
             for snippet in snippets.prefix(5) {
-                let button = UIButton(type: .system)
-                button.contentHorizontalAlignment = .leading
-                button.setTitle("  \(snippet.trigger)  →  \(snippet.expansion)", for: .normal)
-                button.setTitleColor(UIColor(hex: currentTheme.textHex), for: .normal)
-                button.titleLabel?.font = .systemFont(ofSize: 14, weight: .regular)
-                button.titleLabel?.lineBreakMode = .byTruncatingTail
-                button.backgroundColor = UIColor(hex: currentTheme.keyBackgroundHex)
-                button.layer.cornerRadius = 9
-                button.heightAnchor.constraint(equalToConstant: 36).isActive = true
-                let textToInsert = snippet.expansion
-                button.addAction(UIAction { [weak self] _ in
+                let button = makeListButton(title: "\(snippet.trigger)  →  \(snippet.expansion)") { [weak self] btn in
                     self?.hideDrawers()
-                    self?.onAction?(.insertSnippet(textToInsert), button, nil)
-                }, for: .touchUpInside)
+                    self?.onAction?(.insertSnippet(snippet.expansion), btn, nil)
+                }
                 drawerStack.addArrangedSubview(button)
             }
         }
@@ -221,6 +274,7 @@ final class KeyboardView: UIView {
             hideDrawers()
             return
         }
+        hideDrawers()
         activeDrawerMode = .quickSettings
         renderQuickSettingsDrawer()
         drawerOverlay.isHidden = false
@@ -230,6 +284,62 @@ final class KeyboardView: UIView {
     func hideDrawers() {
         activeDrawerMode = .none
         drawerOverlay.isHidden = true
+        emojiDrawer.isHidden = true
+    }
+
+    private func renderClipboardDrawer(currentPasteboardText: String?) {
+        drawerOverlay.backgroundColor = UIColor(hex: currentTheme.backgroundHex).withAlphaComponent(0.97)
+        clearDrawerStack()
+
+        drawerStack.addArrangedSubview(makeDrawerHeader(title: "Área de transferência"))
+
+        if let current = currentPasteboardText, !current.isEmpty {
+            let row = UIStackView()
+            row.axis = .horizontal
+            row.spacing = 6
+
+            let insertBtn = makeListButton(title: "📋  \(current)") { [weak self] btn in
+                self?.hideDrawers()
+                self?.onAction?(.insertSnippet(current), btn, nil)
+            }
+
+            let isPinned = currentSettings.pinnedClipboardItems.contains(current)
+            let pinBtn = UIButton(type: .system)
+            pinBtn.setImage(UIImage(systemName: isPinned ? "pin.slash.fill" : "pin.fill"), for: .normal)
+            pinBtn.tintColor = UIColor(hex: currentTheme.accentHex)
+            pinBtn.backgroundColor = UIColor(hex: currentTheme.keyBackgroundHex)
+            pinBtn.layer.cornerRadius = 9
+            pinBtn.widthAnchor.constraint(equalToConstant: 42).isActive = true
+            pinBtn.addAction(UIAction { [weak self] _ in
+                self?.onUpdateSettings? { s in
+                    if let idx = s.pinnedClipboardItems.firstIndex(of: current) {
+                        s.pinnedClipboardItems.remove(at: idx)
+                    } else {
+                        s.pinnedClipboardItems.insert(current, at: 0)
+                        if s.pinnedClipboardItems.count > 8 {
+                            s.pinnedClipboardItems = Array(s.pinnedClipboardItems.prefix(8))
+                        }
+                    }
+                }
+                self?.renderClipboardDrawer(currentPasteboardText: current)
+            }, for: .touchUpInside)
+
+            row.addArrangedSubview(insertBtn)
+            row.addArrangedSubview(pinBtn)
+            drawerStack.addArrangedSubview(row)
+        }
+
+        if currentSettings.pinnedClipboardItems.isEmpty && (currentPasteboardText?.isEmpty ?? true) {
+            drawerStack.addArrangedSubview(makeEmptyLabel("Copie um texto ou fixe itens frequentes para colar com 1 toque."))
+        } else {
+            for item in currentSettings.pinnedClipboardItems.prefix(4) {
+                let btn = makeListButton(title: "📌  \(item)") { [weak self] b in
+                    self?.hideDrawers()
+                    self?.onAction?(.insertSnippet(item), b, nil)
+                }
+                drawerStack.addArrangedSubview(btn)
+            }
+        }
     }
 
     private func renderQuickSettingsDrawer() {
@@ -238,7 +348,6 @@ final class KeyboardView: UIView {
 
         drawerStack.addArrangedSubview(makeDrawerHeader(title: "Ajustes rápidos • Woomboard"))
 
-        // Linha 1: Layout Samsung vs Apple
         let layoutRow = makePillRow(options: [
             ("Samsung One UI", currentSettings.layoutStyle == .samsung, { [weak self] in
                 self?.onUpdateSettings? { $0.applyLayoutPreset(.samsung) }
@@ -249,7 +358,6 @@ final class KeyboardView: UIView {
         ])
         drawerStack.addArrangedSubview(layoutRow)
 
-        // Linha 2: Toggles rápidos (Linha numérica, Símbolos, Toolbar)
         let togglesRow = makePillRow(options: [
             ("Números 1–0", currentSettings.showNumberRow, { [weak self] in
                 self?.onUpdateSettings? { $0.showNumberRow.toggle() }
@@ -263,7 +371,6 @@ final class KeyboardView: UIView {
         ])
         drawerStack.addArrangedSubview(togglesRow)
 
-        // Linha 3: Altura (Compacto / Padrão / Confortável)
         let heightRow = makePillRow(options: KeyboardHeightPreset.allCases.map { preset in
             (preset.displayName, currentSettings.heightPreset == preset, { [weak self] in
                 self?.onUpdateSettings? { $0.heightPreset = preset }
@@ -271,7 +378,6 @@ final class KeyboardView: UIView {
         })
         drawerStack.addArrangedSubview(heightRow)
 
-        // Linha 4: Temas rápidos
         let themeRow = makePillRow(options: [
             ("Auto", currentSettings.followSystemAppearance && (currentSettings.selectedThemeID == DefaultThemes.woomLight.id || currentSettings.selectedThemeID == DefaultThemes.woomDark.id), { [weak self] in
                 self?.onUpdateSettings? {
@@ -324,6 +430,30 @@ final class KeyboardView: UIView {
         return header
     }
 
+    private func makeListButton(title: String, onTap: @escaping (UIButton) -> Void) -> UIButton {
+        let button = UIButton(type: .system)
+        button.contentHorizontalAlignment = .leading
+        button.setTitle("  \(title)", for: .normal)
+        button.setTitleColor(UIColor(hex: currentTheme.textHex), for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 14, weight: .regular)
+        button.titleLabel?.lineBreakMode = .byTruncatingTail
+        button.backgroundColor = UIColor(hex: currentTheme.keyBackgroundHex)
+        button.layer.cornerRadius = 9
+        button.layer.cornerCurve = .continuous
+        button.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        button.addAction(UIAction { _ in onTap(button) }, for: .touchUpInside)
+        return button
+    }
+
+    private func makeEmptyLabel(_ text: String) -> UILabel {
+        let label = UILabel()
+        label.text = text
+        label.font = .systemFont(ofSize: 13.5)
+        label.numberOfLines = 2
+        label.textColor = UIColor(hex: currentTheme.secondaryTextHex)
+        return label
+    }
+
     private func makePillRow(options: [(String, Bool, () -> Void)]) -> UIStackView {
         let row = UIStackView()
         row.axis = .horizontal
@@ -361,24 +491,31 @@ final class KeyboardView: UIView {
 
     // MARK: - Proportional Row Layout
 
+    private func makeSignature(rows: [[KeySpec]], settings: KeyboardSettings) -> String {
+        let shape = rows.map { row in
+            row.map { String(format: "%.2f", $0.widthMultiplier) }.joined(separator: ",")
+        }.joined(separator: "|")
+        return "\(shape)#\(settings.heightPreset.rawValue)#\(settings.oneHandedMode.rawValue)"
+    }
+
     private func buildProportionalRow(
         specs: [KeySpec],
         theme: KeyboardTheme,
         settings: KeyboardSettings
-    ) -> UIView {
+    ) -> (UIView, [KeyButton]) {
         let container = UIView()
         container.translatesAutoresizingMaskIntoConstraints = false
         container.clipsToBounds = false
 
         let spacing: CGFloat = 5.5
         let totalWeight = specs.reduce(CGFloat(0)) { $0 + $1.widthMultiplier }
-        guard totalWeight > 0 else { return container }
+        guard totalWeight > 0 else { return (container, []) }
 
-        // Fileira intermediária com 9 letras (a..l) ganha respiro lateral sutil estilo Apple/One UI
         let horizontalInset: CGFloat = (specs.count == 9 && !specs[0].isSpecial) ? 14.0 : 0.0
         let totalSpacing = spacing * CGFloat(max(specs.count - 1, 0)) + (horizontalInset * 2)
 
         var previousButton: KeyButton?
+        var createdButtons: [KeyButton] = []
 
         for (index, spec) in specs.enumerated() {
             let button = KeyButton(spec: spec)
@@ -387,6 +524,7 @@ final class KeyboardView: UIView {
             button.apply(theme: theme)
             bindCallbacks(to: button)
             container.addSubview(button)
+            createdButtons.append(button)
 
             NSLayoutConstraint.activate([
                 button.topAnchor.constraint(equalTo: container.topAnchor),
@@ -413,7 +551,7 @@ final class KeyboardView: UIView {
             previousButton = button
         }
 
-        return container
+        return (container, createdButtons)
     }
 
     private func bindCallbacks(to button: KeyButton) {
@@ -422,7 +560,9 @@ final class KeyboardView: UIView {
         }
 
         button.onPressStart = { [weak self] keyButton in
-            guard let self, self.currentSettings.showKeyPopup, !keyButton.spec.isSpecial, !keyButton.spec.title.isEmpty else { return }
+            guard let self else { return }
+            self.onPrepareHaptics?()
+            guard self.currentSettings.showKeyPopup, !keyButton.spec.isSpecial, !keyButton.spec.title.isEmpty else { return }
             let frameInSelf = keyButton.convert(keyButton.bounds, to: self)
             self.popupView.showPreview(
                 character: keyButton.spec.title,
@@ -534,5 +674,19 @@ final class KeyboardView: UIView {
             drawerStack.leadingAnchor.constraint(equalTo: drawerOverlay.leadingAnchor, constant: 10),
             drawerStack.trailingAnchor.constraint(equalTo: drawerOverlay.trailingAnchor, constant: -10)
         ])
+    }
+
+    private func setupEmojiDrawerCallbacks() {
+        emojiDrawer.onSelectEmoji = { [weak self] emoji in
+            guard let self else { return }
+            self.onAction?(.insertEmoji(emoji), self.emojiDrawer, nil)
+        }
+        emojiDrawer.onClose = { [weak self] in
+            self?.hideDrawers()
+        }
+        emojiDrawer.onBackspace = { [weak self] in
+            guard let self else { return }
+            self.onAction?(.backspace, self.emojiDrawer, nil)
+        }
     }
 }

@@ -2,12 +2,17 @@ import AudioToolbox
 import UIKit
 import WoomboardCore
 
-/// Ponto de entrada da Custom Keyboard Extension do Woomboard.
-/// Combina estética nativa Apple iOS 26 (translúcido, SF Symbols) com ergonomia Samsung One UI moderno.
+/// Ponto de entrada da Custom Keyboard Extension do Woomboard — Onda 2 + 120Hz ProMotion.
+/// - Zero travamentos: UITextChecker assíncrono em fila dedicada, reutilização in-place das teclas e haptics pré-aquecidos.
+/// - Recursos: Emojis embutidos, Clipboard inteligente + fixados, Undo local, aprendizado de palavras e Ajustes Rápidos.
 final class KeyboardViewController: UIInputViewController {
     private let settingsStore = SharedSettingsStore()
     private let layoutEngine = KeyboardLayoutEngine()
+
+    // Fila serial dedicada para UITextChecker (nunca bloqueia a main thread a 120Hz)
+    private let suggestionQueue = DispatchQueue(label: "com.woomboard.suggestions", qos: .userInteractive)
     private let textChecker = UITextChecker()
+    private var suggestionGeneration: Int = 0
 
     private var suggestionEngine = SuggestionEngine()
     private var settings: KeyboardSettings = KeyboardSettings()
@@ -18,8 +23,16 @@ final class KeyboardViewController: UIInputViewController {
     private var lastShiftTapDate: Date = .distantPast
     private var lastSpaceTapDate: Date = .distantPast
 
-    private var lightHaptic = UIImpactFeedbackGenerator(style: .light)
-    private var mediumHaptic = UIImpactFeedbackGenerator(style: .medium)
+    // Histórico local leve para Undo/Redo
+    private enum EditOperation {
+        case inserted(String)
+        case deleted(String)
+    }
+    private var undoStack: [EditOperation] = []
+    private var redoStack: [EditOperation] = []
+
+    private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
+    private let mediumHaptic = UIImpactFeedbackGenerator(style: .medium)
 
     private let keyboardView = KeyboardView()
     private let suggestionBar = SuggestionBarView()
@@ -44,7 +57,7 @@ final class KeyboardViewController: UIInputViewController {
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
         syncAutoCapitalization()
-        updateSuggestions()
+        scheduleSuggestionsUpdate()
     }
 
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
@@ -59,10 +72,13 @@ final class KeyboardViewController: UIInputViewController {
     private func loadConfiguration() {
         settings = settingsStore.loadSettings()
         currentTheme = resolvedTheme()
-        suggestionEngine = SuggestionEngine(snippets: settings.snippets)
+        suggestionEngine = SuggestionEngine(snippets: settings.snippets, learnedWords: settings.learnedWords)
     }
 
     private func resolvedTheme() -> KeyboardTheme {
+        if let custom = settings.customTheme, settings.selectedThemeID == custom.id {
+            return custom
+        }
         if settings.followSystemAppearance,
            settings.selectedThemeID == DefaultThemes.woomLight.id || settings.selectedThemeID == DefaultThemes.woomDark.id {
             return traitCollection.userInterfaceStyle == .dark ? DefaultThemes.woomDark : DefaultThemes.woomLight
@@ -94,15 +110,24 @@ final class KeyboardViewController: UIInputViewController {
             self?.handle(action: action, sender: sender, event: event)
         }
 
+        keyboardView.onPrepareHaptics = { [weak self] in
+            guard let self, self.settings.enableHaptics else { return }
+            switch self.settings.hapticIntensity {
+            case .off: break
+            case .light: self.lightHaptic.prepare()
+            case .medium: self.mediumHaptic.prepare()
+            }
+        }
+
         keyboardView.onBackspaceRepeat = { [weak self] deleteWord in
             guard let self else { return }
             self.triggerFeedback(isSpecial: true)
             if deleteWord {
                 self.deleteWordBackward()
             } else {
-                self.textDocumentProxy.deleteBackward()
+                self.deleteSingleBackwardAndRecord()
             }
-            self.updateSuggestions()
+            self.scheduleSuggestionsUpdate()
         }
 
         keyboardView.onSpacebarPan = { [weak self] offset in
@@ -116,12 +141,12 @@ final class KeyboardViewController: UIInputViewController {
         keyboardView.onSelectAccentOrSymbol = { [weak self] value in
             guard let self else { return }
             self.triggerFeedback(isSpecial: false)
-            self.textDocumentProxy.insertText(value)
+            self.insertAndRecord(value)
             if self.shiftState == .upper {
                 self.shiftState = .lower
                 self.renderCurrentLayout()
             }
-            self.updateSuggestions()
+            self.scheduleSuggestionsUpdate()
         }
 
         keyboardView.onUpdateSettings = { [weak self] mutate in
@@ -129,7 +154,7 @@ final class KeyboardViewController: UIInputViewController {
             mutate(&self.settings)
             self.settingsStore.saveSettings(self.settings)
             self.currentTheme = self.resolvedTheme()
-            self.suggestionEngine = SuggestionEngine(snippets: self.settings.snippets)
+            self.suggestionEngine = SuggestionEngine(snippets: self.settings.snippets, learnedWords: self.settings.learnedWords)
             self.applyThemeAndSettings()
             self.renderCurrentLayout()
         }
@@ -145,7 +170,6 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func applyThemeAndSettings() {
-        // Nos temas Apple Light/Dark, deixa o fundo transparente para integrar com o Liquid Glass nativo do iOS 26
         let usesNativeBackdrop = (currentTheme.id == DefaultThemes.woomLight.id || currentTheme.id == DefaultThemes.woomDark.id)
         view.backgroundColor = usesNativeBackdrop ? .clear : UIColor(hex: currentTheme.backgroundHex)
         keyboardView.apply(theme: currentTheme, settings: settings)
@@ -169,7 +193,7 @@ final class KeyboardViewController: UIInputViewController {
     private func handle(action: KeyAction, sender: UIView, event: UIEvent?) {
         let isSpecialAction: Bool
         switch action {
-        case .character, .space, .insertSuggestion, .insertSnippet:
+        case .character, .space, .insertSuggestion, .insertSnippet, .insertEmoji:
             isSpecialAction = false
         default:
             isSpecialAction = true
@@ -178,17 +202,18 @@ final class KeyboardViewController: UIInputViewController {
 
         switch action {
         case .character(let value):
-            textDocumentProxy.insertText(value)
+            insertAndRecord(value)
             if currentLayer == .letters && shiftState == .upper {
                 shiftState = .lower
                 renderCurrentLayout()
             }
 
         case .space:
+            learnCurrentWordBeforeCommit()
             handleSpaceKey()
 
         case .backspace:
-            textDocumentProxy.deleteBackward()
+            deleteSingleBackwardAndRecord()
             syncAutoCapitalization()
 
         case .deleteWordBackward:
@@ -196,7 +221,8 @@ final class KeyboardViewController: UIInputViewController {
             syncAutoCapitalization()
 
         case .returnKey:
-            textDocumentProxy.insertText("\n")
+            learnCurrentWordBeforeCommit()
+            insertAndRecord("\n")
             if currentLayer != .letters {
                 currentLayer = .letters
             }
@@ -254,6 +280,13 @@ final class KeyboardViewController: UIInputViewController {
             applyThemeAndSettings()
             renderCurrentLayout()
 
+        case .openEmojiDrawer:
+            keyboardView.toggleEmojiDrawer()
+
+        case .openClipboardDrawer:
+            let currentPaste = hasFullAccess ? UIPasteboard.general.string : nil
+            keyboardView.toggleClipboardDrawer(currentPasteboardText: currentPaste)
+
         case .openSnippetsDrawer:
             keyboardView.toggleSnippetsDrawer(snippets: settings.snippets)
 
@@ -262,20 +295,92 @@ final class KeyboardViewController: UIInputViewController {
 
         case .pasteClipboard:
             if hasFullAccess, let pasted = UIPasteboard.general.string, !pasted.isEmpty {
-                textDocumentProxy.insertText(pasted)
+                insertAndRecord(pasted)
             }
+
+        case .undo:
+            performUndo()
+
+        case .redo:
+            performRedo()
 
         case .insertSuggestion(let suggestion):
             replaceCurrentWord(with: suggestion)
 
         case .insertSnippet(let text):
-            textDocumentProxy.insertText(text)
+            insertAndRecord(text)
+
+        case .insertEmoji(let emoji):
+            insertAndRecord(emoji)
+            settings.recordRecentEmoji(emoji)
+            settingsStore.saveSettings(settings)
 
         case .moveCursor(let offset):
             textDocumentProxy.adjustTextPosition(byCharacterOffset: offset)
         }
 
-        updateSuggestions()
+        scheduleSuggestionsUpdate()
+    }
+
+    // MARK: - Undo / Redo & Text Helpers
+
+    private func insertAndRecord(_ text: String) {
+        textDocumentProxy.insertText(text)
+        pushUndo(.inserted(text))
+    }
+
+    private func deleteSingleBackwardAndRecord() {
+        let deletedChar = textDocumentProxy.documentContextBeforeInput?.last.map(String.init) ?? ""
+        textDocumentProxy.deleteBackward()
+        if !deletedChar.isEmpty {
+            pushUndo(.deleted(deletedChar))
+        }
+    }
+
+    private func pushUndo(_ op: EditOperation) {
+        undoStack.append(op)
+        if undoStack.count > 25 {
+            undoStack.removeFirst()
+        }
+        redoStack.removeAll(keepingCapacity: true)
+    }
+
+    private func performUndo() {
+        guard let last = undoStack.popLast() else { return }
+        switch last {
+        case .inserted(let text):
+            for _ in 0..<text.count {
+                textDocumentProxy.deleteBackward()
+            }
+            redoStack.append(.inserted(text))
+        case .deleted(let text):
+            textDocumentProxy.insertText(text)
+            redoStack.append(.deleted(text))
+        }
+        syncAutoCapitalization()
+    }
+
+    private func performRedo() {
+        guard let last = redoStack.popLast() else { return }
+        switch last {
+        case .inserted(let text):
+            textDocumentProxy.insertText(text)
+            undoStack.append(.inserted(text))
+        case .deleted(let text):
+            for _ in 0..<text.count {
+                textDocumentProxy.deleteBackward()
+            }
+            undoStack.append(.deleted(text))
+        }
+        syncAutoCapitalization()
+    }
+
+    private func learnCurrentWordBeforeCommit() {
+        let word = suggestionEngine.currentWord(forContextBeforeInput: textDocumentProxy.documentContextBeforeInput)
+        guard word.count >= 3 else { return }
+        settings.recordLearnedWord(word)
+        suggestionEngine = SuggestionEngine(snippets: settings.snippets, learnedWords: settings.learnedWords)
+        settingsStore.saveSettings(settings)
     }
 
     // MARK: - Ergonomic Behaviors
@@ -309,7 +414,7 @@ final class KeyboardViewController: UIInputViewController {
             let previousChar = before[before.index(before.endIndex, offsetBy: -2)]
             if previousChar.isLetter || previousChar.isNumber {
                 textDocumentProxy.deleteBackward()
-                textDocumentProxy.insertText(". ")
+                insertAndRecord(". ")
                 if settings.autoCapitalization && shiftState == .lower {
                     shiftState = .upper
                     renderCurrentLayout()
@@ -318,7 +423,7 @@ final class KeyboardViewController: UIInputViewController {
             }
         }
 
-        textDocumentProxy.insertText(" ")
+        insertAndRecord(" ")
         if currentLayer != .letters {
             currentLayer = .letters
             syncAutoCapitalization()
@@ -334,21 +439,25 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
 
-        var countToDelete = 0
+        var deletedChars: [Character] = []
         var sawNonWhitespace = false
 
         for char in before.reversed() {
             if char.isWhitespace {
                 if sawNonWhitespace { break }
-                countToDelete += 1
+                deletedChars.append(char)
             } else {
                 sawNonWhitespace = true
-                countToDelete += 1
+                deletedChars.append(char)
             }
         }
 
-        for _ in 0..<max(countToDelete, 1) {
+        let count = max(deletedChars.count, 1)
+        for _ in 0..<count {
             textDocumentProxy.deleteBackward()
+        }
+        if !deletedChars.isEmpty {
+            pushUndo(.deleted(String(deletedChars.reversed())))
         }
     }
 
@@ -372,22 +481,39 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    // MARK: - Suggestions (UITextChecker + Snippets)
+    // MARK: - Async 120Hz Suggestions (UITextChecker fora da Main Thread)
 
-    private func updateSuggestions() {
+    private func scheduleSuggestionsUpdate() {
+        suggestionGeneration += 1
+        let generation = suggestionGeneration
         let context = textDocumentProxy.documentContextBeforeInput
-        let currentWord = suggestionEngine.currentWord(forContextBeforeInput: context)
+        let engine = suggestionEngine
+        let locale = settings.language.textCheckerLocale
+        let currentWord = engine.currentWord(forContextBeforeInput: context)
 
-        var systemSuggestions: [String] = []
-        if currentWord.count >= 2 {
+        if currentWord.isEmpty {
+            suggestionBar.update(suggestions: [])
+            return
+        }
+
+        // Resposta imediata de snippets/palavras aprendidas sem esperar UITextChecker
+        let fastResults = engine.suggestions(forContextBeforeInput: context)
+        if !fastResults.isEmpty {
+            suggestionBar.update(suggestions: fastResults)
+        }
+
+        guard currentWord.count >= 2 else { return }
+
+        suggestionQueue.async { [weak self] in
+            guard let self else { return }
             let range = NSRange(location: 0, length: currentWord.utf16.count)
-            let locale = settings.language.textCheckerLocale
+            var systemSuggestions: [String] = []
 
-            if let completions = textChecker.completions(forPartialWordRange: range, in: currentWord, language: locale) {
+            if let completions = self.textChecker.completions(forPartialWordRange: range, in: currentWord, language: locale) {
                 systemSuggestions.append(contentsOf: completions.prefix(3))
             }
 
-            let misspelled = textChecker.rangeOfMisspelledWord(
+            let misspelled = self.textChecker.rangeOfMisspelledWord(
                 in: currentWord,
                 range: range,
                 startingAt: 0,
@@ -395,16 +521,20 @@ final class KeyboardViewController: UIInputViewController {
                 language: locale
             )
             if misspelled.location != NSNotFound,
-               let guesses = textChecker.guesses(forWordRange: misspelled, in: currentWord, language: locale) {
+               let guesses = self.textChecker.guesses(forWordRange: misspelled, in: currentWord, language: locale) {
                 systemSuggestions.insert(contentsOf: guesses.prefix(2), at: 0)
             }
-        }
 
-        let combined = suggestionEngine.suggestions(
-            forContextBeforeInput: context,
-            systemCompletions: systemSuggestions
-        )
-        suggestionBar.update(suggestions: combined)
+            let combined = engine.suggestions(
+                forContextBeforeInput: context,
+                systemCompletions: systemSuggestions
+            )
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.suggestionGeneration == generation else { return }
+                self.suggestionBar.update(suggestions: combined)
+            }
+        }
     }
 
     private func replaceCurrentWord(with suggestion: String) {
@@ -413,9 +543,11 @@ final class KeyboardViewController: UIInputViewController {
         for _ in 0..<token.count {
             textDocumentProxy.deleteBackward()
         }
-        textDocumentProxy.insertText(suggestion + " ")
+        insertAndRecord(suggestion + " ")
+        settings.recordLearnedWord(suggestion)
+        settingsStore.saveSettings(settings)
         syncAutoCapitalization()
-        updateSuggestions()
+        scheduleSuggestionsUpdate()
     }
 
     // MARK: - Feedback & Return Key

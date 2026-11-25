@@ -1,10 +1,12 @@
 import UIKit
 import WoomboardCore
 
-/// Botão individual de tecla com visual Apple iOS 26 (SF Symbols, cantos suaves, sombra sutil)
-/// e ergonomia Samsung One UI moderno (sub-símbolos discretos, long-press deslizante, backspace acelerado e trackpad).
+/// Botão individual de tecla otimizado para 120Hz ProMotion:
+/// - Reutilização in-place via `update(spec:theme:)` (zero recriação de views ao alternar Shift/CapsLock)
+/// - `shadowPath` em cache no `layoutSubviews()` para renderização de sombra em GPU sem offscreen pass
+/// - SF Symbols nativos da Apple + ergonomia Samsung One UI moderno
 final class KeyButton: UIControl {
-    let spec: KeySpec
+    private(set) var spec: KeySpec
 
     var onTap: ((KeyAction, UIView, UIEvent?) -> Void)?
     var onPressStart: ((KeyButton) -> Void)?
@@ -18,12 +20,15 @@ final class KeyButton: UIControl {
     var enableSpacebarTrackpad: Bool = true
 
     private var currentTheme: KeyboardTheme = DefaultThemes.woomLight
+    private var lastShadowBounds: CGRect = .zero
     private var longPressTimer: Timer?
     private var backspaceTimer: Timer?
     private var backspaceRepeatCount: Int = 0
     private var isLongPressActive: Bool = false
     private var isTrackpadActive: Bool = false
     private var trackpadLastX: CGFloat = 0
+
+    private var primaryCenterYConstraint: NSLayoutConstraint?
 
     private let primaryLabel: UILabel = {
         let label = UILabel()
@@ -55,6 +60,76 @@ final class KeyButton: UIControl {
 
         isAccessibilityElement = true
         accessibilityTraits = .keyboardKey
+        layer.cornerCurve = .continuous
+
+        addSubview(primaryLabel)
+        addSubview(iconView)
+        addSubview(secondaryLabel)
+
+        let centerY = primaryLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+        primaryCenterYConstraint = centerY
+
+        NSLayoutConstraint.activate([
+            primaryLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            centerY,
+            primaryLabel.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 3),
+            primaryLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -3),
+
+            iconView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(lessThanOrEqualToConstant: 22),
+            iconView.heightAnchor.constraint(lessThanOrEqualToConstant: 22),
+
+            secondaryLabel.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            secondaryLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4)
+        ])
+
+        applySpecContent(spec)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        invalidateTimers()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Atualiza o shadowPath apenas quando o tamanho muda — elimina rasterização offscreen a 120Hz
+        if currentTheme.showKeyShadow && bounds != lastShadowBounds && !bounds.isEmpty {
+            lastShadowBounds = bounds
+            layer.shadowPath = UIBezierPath(
+                roundedRect: bounds,
+                cornerRadius: CGFloat(currentTheme.keyCornerRadius)
+            ).cgPath
+        }
+    }
+
+    /// Atualiza a tecla no lugar (sem recriar UIView nem refazer Auto Layout) em < 0.1ms.
+    func update(spec newSpec: KeySpec, theme: KeyboardTheme) {
+        let specChanged = (spec != newSpec)
+        let themeChanged = (currentTheme != theme)
+        spec = newSpec
+        currentTheme = theme
+
+        if specChanged {
+            applySpecContent(newSpec)
+        }
+        if specChanged || themeChanged {
+            updateVisualState(pressed: isHighlighted)
+        }
+    }
+
+    func apply(theme: KeyboardTheme) {
+        currentTheme = theme
+        lastShadowBounds = .zero
+        updateVisualState(pressed: isHighlighted)
+        setNeedsLayout()
+    }
+
+    private func applySpecContent(_ spec: KeySpec) {
         accessibilityLabel = spec.accessibilityLabel
 
         if let symbolName = spec.systemImage {
@@ -80,38 +155,7 @@ final class KeyButton: UIControl {
 
         secondaryLabel.text = spec.secondaryTitle
         secondaryLabel.isHidden = (spec.secondaryTitle == nil)
-
-        addSubview(primaryLabel)
-        addSubview(iconView)
-        addSubview(secondaryLabel)
-
-        NSLayoutConstraint.activate([
-            primaryLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
-            primaryLabel.centerYAnchor.constraint(equalTo: centerYAnchor, constant: spec.secondaryTitle == nil ? 0 : 2.5),
-            primaryLabel.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 3),
-            primaryLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -3),
-
-            iconView.centerXAnchor.constraint(equalTo: centerXAnchor),
-            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconView.widthAnchor.constraint(lessThanOrEqualToConstant: 22),
-            iconView.heightAnchor.constraint(lessThanOrEqualToConstant: 22),
-
-            secondaryLabel.topAnchor.constraint(equalTo: topAnchor, constant: 2),
-            secondaryLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4)
-        ])
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    deinit {
-        invalidateTimers()
-    }
-
-    func apply(theme: KeyboardTheme) {
-        currentTheme = theme
-        updateVisualState(pressed: isHighlighted)
+        primaryCenterYConstraint?.constant = (spec.secondaryTitle == nil) ? 0 : 2.5
     }
 
     private func updateVisualState(pressed: Bool) {
@@ -142,15 +186,21 @@ final class KeyButton: UIControl {
         secondaryLabel.textColor = UIColor(hex: currentTheme.secondaryTextHex).withAlphaComponent(0.65)
 
         layer.cornerRadius = CGFloat(currentTheme.keyCornerRadius)
-        layer.cornerCurve = .continuous
 
         if currentTheme.showKeyShadow {
             layer.shadowColor = UIColor.black.cgColor
             layer.shadowOpacity = 0.22
             layer.shadowOffset = CGSize(width: 0, height: 1)
             layer.shadowRadius = 0.4
+            if !bounds.isEmpty {
+                layer.shadowPath = UIBezierPath(
+                    roundedRect: bounds,
+                    cornerRadius: CGFloat(currentTheme.keyCornerRadius)
+                ).cgPath
+            }
         } else {
             layer.shadowOpacity = 0
+            layer.shadowPath = nil
         }
     }
 
@@ -257,7 +307,7 @@ final class KeyButton: UIControl {
         backspaceRepeatCount = 0
         backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
             guard let self else { return }
-            self.backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.09, repeats: true) { [weak self] _ in
+            self.backspaceTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
                 guard let self else { return }
                 self.backspaceRepeatCount += 1
                 let deleteWord = self.backspaceRepeatCount >= 12

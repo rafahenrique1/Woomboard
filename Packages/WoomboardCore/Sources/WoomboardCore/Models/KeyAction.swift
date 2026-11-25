@@ -16,10 +16,15 @@ public enum KeyAction: Equatable, Sendable {
     case switchLanguage
     case insertSuggestion(String)
     case insertSnippet(String)
+    case insertEmoji(String)
     case moveCursor(Int)
     case pasteClipboard
+    case undo
+    case redo
     case toggleOneHanded(OneHandedMode)
     case toggleLayoutStyle
+    case openEmojiDrawer
+    case openClipboardDrawer
     case openSnippetsDrawer
     case openQuickSettings
 }

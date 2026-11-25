@@ -8,7 +8,7 @@ final class KeyboardView: UIView {
     var onBackspaceRepeat: ((_ deleteWord: Bool) -> Void)?
     var onSpacebarPan: ((Int) -> Void)?
     var onSelectAccentOrSymbol: ((String) -> Void)?
-    var onUpdateSettings: ((inout KeyboardSettings) -> Void)?
+    var onUpdateSettings: (((inout KeyboardSettings) -> Void) -> Void)?
 
     private var currentTheme: KeyboardTheme = DefaultThemes.woomLight
     private var currentSettings: KeyboardSettings = KeyboardSettings()

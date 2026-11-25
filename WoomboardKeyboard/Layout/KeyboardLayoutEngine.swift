@@ -339,6 +339,7 @@ final class KeyboardLayoutEngine {
             row.append(
                 KeySpec(
                     title: ".",
+                    action: .character("."),
                     accentOptions: Self.accentMap["."] ?? [],
                     isSpecial: false,
                     widthMultiplier: 0.95,

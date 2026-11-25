@@ -41,6 +41,26 @@ struct SettingsView: View {
                             Text(preset.displayName).tag(preset)
                         }
                     }
+                    .onChange(of: settings.heightPreset) { preset in
+                        switch preset {
+                        case .compact: settings.keyboardHeightScale = 0.88
+                        case .standard: settings.keyboardHeightScale = 1.0
+                        case .comfortable: settings.keyboardHeightScale = 1.14
+                        }
+                        onSave()
+                    }
+
+                    NavigationLink {
+                        KeyboardResizeView(settings: $settings, onSave: onSave)
+                    } label: {
+                        HStack {
+                            Label("Redimensionar manualmente", systemImage: "arrow.up.and.down.square")
+                            Spacer()
+                            Text("\(Int(round(settings.keyboardHeightScale * 100)))%")
+                                .font(.subheadline.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
 
                     Picker("Modo uma mão", selection: $settings.oneHandedMode) {
                         ForEach(OneHandedMode.allCases) { mode in

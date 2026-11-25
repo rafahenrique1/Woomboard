@@ -204,6 +204,8 @@ public struct KeyboardSettings: Codable, Equatable, Sendable {
     public var layoutStyle: KeyboardLayoutStyle
     public var language: KeyboardLanguage
     public var heightPreset: KeyboardHeightPreset
+    /// Escala contínua de altura do teclado (0.80 a 1.65, limitada a 50% da tela no iOS).
+    public var keyboardHeightScale: Double
     public var oneHandedMode: OneHandedMode
 
     // Feedback
@@ -235,6 +237,7 @@ public struct KeyboardSettings: Codable, Equatable, Sendable {
         layoutStyle: KeyboardLayoutStyle = .samsung,
         language: KeyboardLanguage = .ptBR,
         heightPreset: KeyboardHeightPreset = .standard,
+        keyboardHeightScale: Double = 1.0,
         oneHandedMode: OneHandedMode = .off,
         enableHaptics: Bool = true,
         hapticIntensity: HapticIntensity = .light,
@@ -259,6 +262,7 @@ public struct KeyboardSettings: Codable, Equatable, Sendable {
         self.layoutStyle = layoutStyle
         self.language = language
         self.heightPreset = heightPreset
+        self.keyboardHeightScale = min(max(keyboardHeightScale, 0.80), 1.65)
         self.oneHandedMode = oneHandedMode
         self.enableHaptics = enableHaptics
         self.hapticIntensity = hapticIntensity
@@ -321,6 +325,7 @@ public struct KeyboardSettings: Codable, Equatable, Sendable {
         case layoutStyle
         case language
         case heightPreset
+        case keyboardHeightScale
         case oneHandedMode
         case enableHaptics
         case hapticIntensity
@@ -350,6 +355,7 @@ public struct KeyboardSettings: Codable, Equatable, Sendable {
         layoutStyle = try c.decodeIfPresent(KeyboardLayoutStyle.self, forKey: .layoutStyle) ?? defaults.layoutStyle
         language = try c.decodeIfPresent(KeyboardLanguage.self, forKey: .language) ?? defaults.language
         heightPreset = try c.decodeIfPresent(KeyboardHeightPreset.self, forKey: .heightPreset) ?? defaults.heightPreset
+        keyboardHeightScale = try c.decodeIfPresent(Double.self, forKey: .keyboardHeightScale) ?? defaults.keyboardHeightScale
         oneHandedMode = try c.decodeIfPresent(OneHandedMode.self, forKey: .oneHandedMode) ?? defaults.oneHandedMode
         enableHaptics = try c.decodeIfPresent(Bool.self, forKey: .enableHaptics) ?? defaults.enableHaptics
         hapticIntensity = try c.decodeIfPresent(HapticIntensity.self, forKey: .hapticIntensity) ?? defaults.hapticIntensity

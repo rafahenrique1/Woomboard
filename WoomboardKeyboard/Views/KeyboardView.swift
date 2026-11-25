@@ -169,20 +169,28 @@ final class KeyboardView: UIView {
         lastRowSignature = signature
         rowButtons.removeAll(keepingCapacity: true)
 
-        let baseRowHeight = CGFloat(settings.heightPreset.rowHeight)
+        let baseRowHeight = round(43.0 * CGFloat(settings.keyboardHeightScale))
         let numberRowHeight = round(baseRowHeight * 0.84)
         let rowSpacing: CGFloat = rows.count >= 5 ? 7 : 9
         rowsStack.spacing = rowSpacing
 
+        // Garante que o teclado nunca ultrapasse 50% da altura da tela do iPhone
+        let screenMaxHeight = round(UIScreen.main.bounds.height * 0.48) - 48.0
         var totalHeight: CGFloat = 0
         rowsStack.arrangedSubviews.forEach {
             rowsStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
         }
 
+        let rawTotal = rows.enumerated().reduce(CGFloat(0)) { acc, pair in
+            let isNum = pair.element.first?.isNumberRow == true
+            return acc + (isNum ? numberRowHeight : baseRowHeight) + (pair.offset < rows.count - 1 ? rowSpacing : 0)
+        }
+        let clampFactor: CGFloat = rawTotal > screenMaxHeight && rawTotal > 0 ? (screenMaxHeight / rawTotal) : 1.0
+
         for (idx, row) in rows.enumerated() {
             let isNumRow = row.first?.isNumberRow == true
-            let rowHeight = isNumRow ? numberRowHeight : baseRowHeight
+            let rowHeight = round((isNumRow ? numberRowHeight : baseRowHeight) * clampFactor)
             let (rowContainer, buttons) = buildProportionalRow(specs: row, theme: theme, settings: settings)
             rowContainer.heightAnchor.constraint(equalToConstant: rowHeight).isActive = true
             rowsStack.addArrangedSubview(rowContainer)
@@ -371,11 +379,7 @@ final class KeyboardView: UIView {
         ])
         drawerStack.addArrangedSubview(togglesRow)
 
-        let heightRow = makePillRow(options: KeyboardHeightPreset.allCases.map { preset in
-            (preset.displayName, currentSettings.heightPreset == preset, { [weak self] in
-                self?.onUpdateSettings? { $0.heightPreset = preset }
-            })
-        })
+        let heightRow = makeHeightSliderRow()
         drawerStack.addArrangedSubview(heightRow)
 
         let themeRow = makePillRow(options: [
@@ -491,11 +495,42 @@ final class KeyboardView: UIView {
 
     // MARK: - Proportional Row Layout
 
+    private func makeHeightSliderRow() -> UIStackView {
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.spacing = 8
+        row.alignment = .center
+
+        let label = UILabel()
+        let pct = Int(round(currentSettings.keyboardHeightScale * 100))
+        label.text = "Tamanho \(pct)%"
+        label.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        label.textColor = UIColor(hex: currentTheme.textHex)
+        label.widthAnchor.constraint(equalToConstant: 92).isActive = true
+
+        let slider = UISlider()
+        slider.minimumValue = 0.80
+        slider.maximumValue = 1.65
+        slider.value = Float(currentSettings.keyboardHeightScale)
+        slider.minimumTrackTintColor = UIColor(hex: currentTheme.accentHex)
+        slider.isContinuous = false
+        slider.addAction(UIAction { [weak self, weak slider] _ in
+            guard let self, let slider else { return }
+            let val = Double(slider.value)
+            self.onUpdateSettings? { $0.keyboardHeightScale = val }
+        }, for: .valueChanged)
+
+        row.addArrangedSubview(label)
+        row.addArrangedSubview(slider)
+        return row
+    }
+
     private func makeSignature(rows: [[KeySpec]], settings: KeyboardSettings) -> String {
         let shape = rows.map { row in
             row.map { String(format: "%.2f", $0.widthMultiplier) }.joined(separator: ",")
         }.joined(separator: "|")
-        return "\(shape)#\(settings.heightPreset.rawValue)#\(settings.oneHandedMode.rawValue)"
+        let scaleKey = String(format: "%.2f", settings.keyboardHeightScale)
+        return "\(shape)#\(scaleKey)#\(settings.oneHandedMode.rawValue)"
     }
 
     private func buildProportionalRow(

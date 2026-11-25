@@ -35,20 +35,27 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            AD_HOC_CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Package unsigned IPA for KravaSign
+      - name: Verify Info.plist & Package unsigned IPA for KravaSign
         run: |
           APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/WoomboardApp.app"
-          if [ ! -d "$APP_PATH" ]; then
-            echo "ERROR: WoomboardApp.app not found at $APP_PATH"
-            ls -la build/DerivedData/Build/Products/Release-iphoneos/ || true
+          EXT_PATH="$APP_PATH/PlugIns/WoomboardKeyboard.appex"
+
+          if [ ! -d "$APP_PATH" ] || [ ! -d "$EXT_PATH" ]; then
+            echo "ERROR: Missing WoomboardApp.app or WoomboardKeyboard.appex"
             exit 1
           fi
 
-          echo "Checking embedded keyboard extension:"
-          ls -la "$APP_PATH/PlugIns/"
+          echo "=== App Info.plist ==="
+          plutil -p "$APP_PATH/Info.plist"
+          echo "=== Keyboard Extension Info.plist ==="
+          plutil -p "$EXT_PATH/Info.plist"
+
+          # Garante que NSExtension está presente (obrigatório para instalação no iOS)
+          plutil -p "$EXT_PATH/Info.plist" | grep -q "com.apple.keyboard-service"
+          plutil -p "$APP_PATH/Info.plist" | grep -q "UILaunchScreen"
 
           mkdir -p build/ipa/Payload
           cp -R "$APP_PATH" build/ipa/Payload/

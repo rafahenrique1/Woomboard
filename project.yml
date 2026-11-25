@@ -1,0 +1,60 @@
+name: Woomboard
+options:
+  bundleIdPrefix: com.woomboard
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "15.0"
+
+packages:
+  WoomboardCore:
+    path: Packages/WoomboardCore
+
+targets:
+  WoomboardApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: WoomboardApp
+    info:
+      path: WoomboardApp/Resources/Info.plist
+    entitlements:
+      path: WoomboardApp/Resources/WoomboardApp.entitlements
+    dependencies:
+      - package: WoomboardCore
+      - target: WoomboardKeyboard
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.woomboard.app
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+  WoomboardKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: WoomboardKeyboard
+    info:
+      path: WoomboardKeyboard/Resources/Info.plist
+    entitlements:
+      path: WoomboardKeyboard/Resources/WoomboardKeyboard.entitlements
+    dependencies:
+      - package: WoomboardCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.woomboard.app.keyboard
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        APPLICATION_EXTENSION_API_ONLY: YES
+
+  WoomboardTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: WoomboardTests
+    dependencies:
+      - target: WoomboardApp
+      - package: WoomboardCore
